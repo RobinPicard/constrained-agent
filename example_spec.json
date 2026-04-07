@@ -1,0 +1,44 @@
+{
+    "format": "qwen3",
+    "system_prompt": "You are a helpful banking assistant.",
+    "tools": {
+        "check_balance": {
+            "description": "Check account balance",
+            "params": {
+                "account_id": {"type": "string"}
+            },
+            "required": ["account_id"]
+        },
+        "transfer": {
+            "description": "Transfer funds to a recipient",
+            "params": {
+                "account_id": {"type": "string"},
+                "recipient_id": {"type": "string"},
+                "amount": {"type": "number"},
+                "currency": {"type": "string", "default": "USD"}
+            },
+            "required": ["account_id", "recipient_id", "amount"]
+        }
+    },
+    "rules": [
+        {
+            "name": "block_transfer_until_balance_checked",
+            "if": {"tool": "check_balance", "has_run": false},
+            "then": [
+                {"tool": "transfer", "available": false}
+            ]
+        },
+        {
+            "name": "cap_transfer_to_balance",
+            "if": {"tool": "check_balance", "has_run": true},
+            "then": [
+                {
+                    "tool": "transfer",
+                    "params": {
+                        "amount": {"maximum": {"$from": "check_balance.result.currentBalance"}}
+                    }
+                }
+            ]
+        }
+    ]
+}

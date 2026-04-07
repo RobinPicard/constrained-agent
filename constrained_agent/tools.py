@@ -1,7 +1,8 @@
 from __future__ import annotations
+import inspect
 from copy import deepcopy
 from typing import Any, Callable, Type
-from pydantic import BaseModel
+from pydantic import BaseModel, create_model
 
 
 class ParamSchema:
@@ -93,9 +94,24 @@ class Tool:
         return self.function(**kwargs)
 
 
+def _tool_from_callable(func: Callable) -> Tool:
+    description = (func.__doc__ or "").strip()
+    sig = inspect.signature(func)
+    fields: dict[str, Any] = {}
+    for name, param in sig.parameters.items():
+        annotation = param.annotation if param.annotation is not inspect.Parameter.empty else Any
+        if param.default is inspect.Parameter.empty:
+            fields[name] = (annotation, ...)
+        else:
+            fields[name] = (annotation, param.default)
+    params_model = create_model(func.__name__ + "_params", **fields)
+    return Tool(func.__name__, description, params_model, func)
+
+
 class ToolRegistry:
-    def __init__(self, tools: list[Tool]):
-        self._tools: dict[str, Tool] = {t.name: t for t in tools}
+    def __init__(self, tools: list[Tool | Callable]):
+        normalized = [t if isinstance(t, Tool) else _tool_from_callable(t) for t in tools]
+        self._tools: dict[str, Tool] = {t.name: t for t in normalized}
 
     def __getitem__(self, name: str) -> ToolSchema:
         return self._tools[name].schema

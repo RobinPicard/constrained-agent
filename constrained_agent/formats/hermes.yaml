@@ -1,0 +1,28 @@
+# Format descriptor for NousResearch Hermes and models using the json_body style
+# without an outer wrapper.
+#
+# Style: json_body
+#   The tool name is inside the JSON body between fixed open/close delimiters.
+#   Each call block looks like:
+#
+#     <tool_call>
+#     {"name": "tool_name", "arguments": {"param1": "value1"}}
+#     </tool_call>
+#
+#   Because the opening token is the same for every tool, structural tags produce
+#   a single StructuralTagItem covering all tools via an anyOf union schema:
+#     begin  = open                        (e.g. "<tool_call>")
+#     schema = anyOf [ {name_field: {const: tool_name}, args_field: tool_schema}, ... ]
+#     end    = close                       (e.g. "</tool_call>")
+#   trigger = open                         (e.g. "<tool_call>")
+#
+# Optional fields (not used here):
+#   wrapper_open  / wrapper_close — outer container token wrapping all calls.
+#   When present, the trigger becomes wrapper_open instead of open.
+
+function:
+  style: json_body
+  open: "<tool_call>"
+  close: "</tool_call>"
+  name_field: name
+  args_field: arguments
