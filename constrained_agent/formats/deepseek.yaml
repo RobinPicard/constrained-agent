@@ -1,0 +1,32 @@
+# Format descriptor for DeepSeek models using the json_body style
+# with an outer wrapper around all calls.
+#
+# Style: json_body (with wrapper)
+#   The tool name is inside the JSON body. All calls are wrapped in an outer
+#   container, and each individual call has its own open/close pair:
+#
+#     <think>...</think>
+#     <｜tool▁calls▁begin｜>
+#     <｜tool▁call▁begin｜>
+#     {"name": "tool_name", "parameters": {"param1": "value1"}}
+#     <｜tool▁call▁end｜>
+#     <｜tool▁calls▁end｜>
+#
+#   Structural tags produce a single StructuralTagItem:
+#     begin  = open                         (e.g. "<｜tool▁call▁begin｜>")
+#     schema = anyOf [ {name_field: {const: tool_name}, args_field: tool_schema}, ... ]
+#     end    = close                        (e.g. "<｜tool▁call▁end｜>")
+#   trigger = wrapper_open                  (e.g. "<｜tool▁calls▁begin｜>")
+
+think:
+  prefix: "<think>"
+  close: "</think>"
+
+function:
+  style: json_body
+  wrapper_open:  "<｜tool▁calls▁begin｜>"
+  wrapper_close: "<｜tool▁calls▁end｜>"
+  open:  "<｜tool▁call▁begin｜>"
+  close: "<｜tool▁call▁end｜>"
+  name_field: name
+  args_field: parameters

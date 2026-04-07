@@ -1,0 +1,26 @@
+# Format descriptor for Qwen3 and models using the tagged_name style.
+#
+# Style: tagged_name
+#   The tool name is embedded in the opening delimiter.
+#   Each call block looks like:
+#
+#     <function=tool_name>
+#     {"param1": "value1", "param2": "value2"}
+#     </function>
+#
+#   Because the opening token is unique per tool, structural tags produce one
+#   StructuralTagItem per available tool:
+#     begin  = prefix + tool_name + sep   (e.g. "<function=get_balance>")
+#     schema = the tool's JSON parameter schema
+#     end    = close                       (e.g. "</function>")
+#   trigger = prefix                       (e.g. "<function=")
+
+think:
+  prefix: "<think>"
+  close: "</think>"
+
+function:
+  style: tagged_name
+  prefix: "<function="
+  sep: ">"
+  close: "</function>"
