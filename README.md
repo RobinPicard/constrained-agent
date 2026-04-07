@@ -1,29 +1,12 @@
 # constrained-agent
 
-An agent framework where tool availability and parameter bounds are dynamically enforced based on session history.
+An agent framework where tool availability and parameter bounds are enforced at the token level on every turn, based on session history.
 
 ## The idea
 
-Most agent frameworks treat tool schemas as static: the model sees the same set of tools with the same parameters on every turn, and compliance with any workflow rules is left to the system prompt. This works until it doesn't — a sufficiently insistent user, a distracted model, or a complex multi-step workflow can cause the agent to skip required steps or call tools with invalid values.
+Most agent frameworks treat tool schemas as static: the model sees the same tools with the same parameters every turn, and workflow compliance is left to the system prompt. This breaks under adversarial prompts, distracted models, or complex multi-step workflows — the model can skip required steps or pass invalid values.
 
-`constrained-agent` takes a different approach: **constraints are expressed as Python functions that mutate tool schemas at the start of each turn**. A tool that hasn't been unlocked yet is simply absent from the schema sent to the model — it cannot be called regardless of what the user asks or how the model reasons.
-
-```python
-@constraint
-def fraud_check_required(session, tools):
-    approved = any(run.result.get("approved") for run in session.tool("run_fraud_check").runs)
-    if not approved:
-        tools["execute_transfer"].available = False
-        tools["execute_transfer"].unavailable_reason = (
-            "run_fraud_check must be called and return approved=True before any transfer."
-        )
-```
-
-At each turn the agent:
-1. Resets all tool schemas to their base definitions
-2. Evaluates all constraints (which may lock tools, narrow parameter ranges, restrict enums, etc.)
-3. Sends only the currently-available tools to the model
-4. Executes tool calls, records them in the session, repeats
+`constrained-agent` takes a different approach: **constraints are declared in a JSON spec that is compiled into schema mutations applied at the start of every turn**. A tool that hasn't been unlocked is absent from the schema — it cannot be called regardless of what the user or model says. Parameter bounds are enforced at the token level via [xgrammar](https://github.com/mlc-ai/xgrammar), so the model cannot generate an out-of-range value even if it tries.
 
 ## Install
 
@@ -31,64 +14,203 @@ At each turn the agent:
 pip install -e .
 ```
 
-Requires Python 3.11+. Set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` as appropriate.
+Requires Python 3.11+.
 
-## Usage
+## Quick start
 
-### Define tools
+Define a spec file describing the model format, tools, and constraint rules:
 
-Tools are defined with a name, description, a Pydantic model or JSON schema for parameters, and a callable:
+```json
+{
+    "format": "qwen3",
+    "system_prompt": "You are a helpful banking assistant.",
+    "tools": {
+        "check_balance": {
+            "description": "Check account balance",
+            "params": {"account_id": {"type": "string"}},
+            "required": ["account_id"]
+        },
+        "transfer": {
+            "description": "Transfer funds to a recipient",
+            "params": {
+                "account_id": {"type": "string"},
+                "recipient_id": {"type": "string"},
+                "amount": {"type": "number"}
+            },
+            "required": ["account_id", "recipient_id", "amount"]
+        }
+    },
+    "rules": [
+        {
+            "name": "block_transfer_until_balance_checked",
+            "if": {"tool": "check_balance", "has_run": false},
+            "then": [{"tool": "transfer", "available": false}]
+        },
+        {
+            "name": "cap_transfer_to_balance",
+            "if": {"tool": "check_balance", "has_run": true},
+            "then": [{
+                "tool": "transfer",
+                "params": {"amount": {"maximum": {"$from": "check_balance.result.currentBalance"}}}
+            }]
+        }
+    ]
+}
+```
+
+Then provide only the function implementations:
+
+```python
+import outlines
+from constrained_agent import Agent
+
+model = outlines.from_transformers(...)
+
+def check_balance(account_id: str) -> dict:
+    return {"account_id": account_id, "currentBalance": 500.0}
+
+def transfer(account_id: str, recipient_id: str, amount: float) -> dict:
+    return {"status": "success", "amount": amount}
+
+agent = Agent(
+    model,
+    implementations={"check_balance": check_balance, "transfer": transfer},
+    spec="banking_spec.json",
+)
+
+response = agent.run("Transfer $600 to ACC-456 from ACC-123.")
+```
+
+## Defining tools
+
+Tools can be defined either in the spec JSON (as above) or as Pydantic `BaseModel` classes passed directly to `Agent`. The class name (stripped of common suffixes and converted to snake_case) becomes the tool name; the docstring becomes the description.
 
 ```python
 from pydantic import BaseModel
-from constrained_agent import Tool, ToolRegistry
 
-class TransferParams(BaseModel):
+class CheckBalance(BaseModel):
+    """Check account balance."""
+    account_id: str
+
+class Transfer(BaseModel):
+    """Transfer funds to a recipient."""
     account_id: str
     recipient_id: str
     amount: float
 
-def transfer(account_id: str, recipient_id: str, amount: float) -> dict:
-    ...
-
-registry = ToolRegistry([
-    Tool("check_balance", "Check account balance.", CheckBalanceParams, check_balance),
-    Tool("transfer", "Transfer funds to a recipient.", TransferParams, transfer),
-])
+agent = Agent(
+    model,
+    implementations={"check_balance": check_balance, "transfer": transfer},
+    tools=[CheckBalance, Transfer],
+    spec="rules_only_spec.json",  # spec with no tools section
+)
 ```
 
-### Define constraints
-
-Constraints are Python functions that receive the current `session` and `tools` and mutate them in place. They are evaluated in registration order at the start of every turn.
+To control the tool name explicitly, set a `ClassVar` attribute:
 
 ```python
-from constrained_agent import constraint, ConstraintEvaluator
+from typing import ClassVar
 
-@constraint
-def require_balance_before_transfer(session, tools):
-    if not session.tool("check_balance").has_run:
-        tools["transfer"].available = False
-        tools["transfer"].unavailable_reason = "check_balance must be called first."
-
-@constraint
-def balance_limit(session, tools):
-    if session.tool("check_balance").has_run:
-        last_balance = session.tool("check_balance").last_result["currentBalance"]
-        tools["transfer"].params["amount"].maximum = last_balance
-
-evaluator = ConstraintEvaluator([require_balance_before_transfer, balance_limit])
+class CheckBalance(BaseModel):
+    name: ClassVar[str] = "check_balance"
+    """Check account balance."""
+    account_id: str
 ```
 
-**What constraints can do:**
+## Constraint rules
+
+Rules live in the `"rules"` array of the spec. Each rule has an optional `name`, an `if` condition, and a `then` list of effects.
+
+### Conditions
+
+```json
+{"tool": "check_balance", "has_run": false}
+```
+True when the tool has (or hasn't) been called this session.
+
+```json
+{"tool": "process_payment", "result": {"status": "success"}}
+```
+True when the tool's last result matches all given field values.
+
+```json
+{"allOf": [
+    {"tool": "calculate_shipping", "has_run": true},
+    {"tool": "run_credit_check", "has_run": true}
+]}
+```
+True when all sub-conditions are true.
+
+```json
+{"anyOf": [
+    {"tool": "collect_symptoms", "has_run": false},
+    {"tool": "check_vitals", "has_run": false}
+]}
+```
+True when at least one sub-condition is true.
+
+### Effects
+
+Each item in `then` names a tool and describes how to modify it:
+
+```json
+{"tool": "transfer", "available": false, "reason": "check_balance must run first."}
+```
+
+```json
+{
+    "tool": "transfer",
+    "params": {
+        "amount": {"maximum": 1000, "minimum": 0},
+        "currency": {"enum": ["USD", "EUR"], "required": true}
+    }
+}
+```
+
+### `$from` expressions
+
+Any numeric or list value in `params` can reference a previous tool's result:
+
+```json
+{"maximum": {"$from": "check_balance.result.currentBalance"}}
+{"enum":    {"$from": "get_products.result.items[*].id"}}
+```
+
+The expression is evaluated lazily — if the referenced tool hasn't run yet, the constraint is silently skipped.
+
+## Python rules
+
+For patterns not expressible in the JSON DSL, pass Python callables via `rules=`. The function name is the rule name; the docstring is the description.
+
+By default (`rules_mode="replace"`), Python rules replace the spec's rules entirely. Pass `rules_mode="merge"` to run both:
+
+```python
+def require_full_inventory_before_shipping(session, registry):
+    """check_inventory must be called for every item in the cart."""
+    if not session.tool("get_cart").has_run:
+        return
+    cart_products = {item["product_id"] for item in session.tool("get_cart").last_result["items"]}
+    checked = {run.args["product_id"] for run in session.tool("check_inventory").runs}
+    missing = cart_products - checked
+    if missing:
+        registry["calculate_shipping"].available = False
+        registry["calculate_shipping"].unavailable_reason = (
+            f"check_inventory must be called for every cart item. Missing: {', '.join(sorted(missing))}"
+        )
+
+agent = Agent(model, implementations, spec="spec.json", rules=[require_full_inventory_before_shipping], rules_mode="merge")
+```
+
+**What rules can modify:**
 
 | Expression | Effect |
 |---|---|
-| `tools["x"].available = False` | Removes the tool from the schema entirely |
-| `tools["x"].unavailable_reason = "..."` | Included in the system prompt so the model knows why |
-| `tools["x"].params["amount"].maximum = 500` | Sets an upper bound on a numeric parameter |
-| `tools["x"].params["amount"].minimum = 0` | Sets a lower bound |
-| `tools["x"].params["status"].enum = ["active"]` | Restricts allowed values |
-| `tools["x"].params["reason"].required = True` | Makes a parameter required |
+| `registry["x"].available = False` | Removes the tool from the schema |
+| `registry["x"].unavailable_reason = "..."` | Shown to the model in the system prompt |
+| `registry["x"].params["n"].maximum = 500` | Upper bound on a numeric parameter |
+| `registry["x"].params["n"].minimum = 0` | Lower bound |
+| `registry["x"].params["n"].enum = ["a", "b"]` | Restricts allowed values |
+| `registry["x"].params["n"].required = True` | Makes a parameter required |
 
 **What session history exposes:**
 
@@ -100,44 +222,45 @@ session.tool("check_balance").runs[-1].args    # dict
 session.tool("check_balance").runs[-1].result  # dict
 ```
 
-### Run the agent
+## Running the agent
 
 ```python
-from constrained_agent import Agent, OpenAIAdapter
+# Single-shot: resets session on each call
+response = agent.run("Transfer $200 to ACC-456.")
 
-agent = Agent(
-    model=OpenAIAdapter(model="gpt-4o"),
-    registry=registry,
-    evaluator=evaluator,
-    system_prompt="You are a helpful banking assistant.",
-    verbose=True,
-)
-
-# Single-shot (resets session each call)
-response = agent.run("Transfer $200 to ACC-456 from ACC-123.")
-
-# Multi-turn (preserves session across calls)
+# Multi-turn: preserves session across calls
 response = agent.chat("What is my balance?")
 response = agent.chat("Now transfer $100.")
 ```
 
-## Supported models
+## Full `Agent` constructor
 
-| Provider | Adapter | Notes |
-|---|---|---|
-| OpenAI | `OpenAIAdapter(model="gpt-4o")` | Structured outputs enforce tool schemas |
-| Anthropic | `AnthropicAdapter(model="claude-opus-4-6")` | Tool use with schema validation |
+```python
+Agent(
+    model,                               # required — the language model
+    implementations={...},               # {tool_name: callable}
+    spec="spec.json",                    # path, dict, or AgentSpec — provides defaults
+    tools=[PydanticClass, ...],          # overrides spec tools section
+    tools_mode="replace",                # "replace" (default) or "merge"
+    rules=[python_fn, ...],              # Python constraint callables
+    rules_mode="replace",                # "replace" (default) or "merge" with spec rules
+    format="qwen3",                      # ModelFormat or name string — overrides spec
+    system_prompt="...",                 # overrides spec
+    max_turns=10,                        # overrides spec
+    inference_kwargs={"max_new_tokens": 512},  # generation kwargs — overrides spec
+    max_concurrent_tool_calls=4,         # parallel tool execution
+    verbose=True,
+)
+```
 
-Open-source models (token-level enforcement) are planned.
+Explicit arguments always override values from the spec.
 
-## Why token-level enforcement matters
+## Examples
 
-For API-based providers, constraints work by updating the tool schema sent to the model each turn. This means:
-- Tool availability (`available = False`) is fully enforced — the tool is simply not in the schema
-- Parameter constraints (`maximum`, `enum`, etc.) are passed to the provider but may not be enforced at generation time depending on the provider
-
-With open-source models, constraints will be enforced at the token level during generation — the model cannot produce a tool call that violates a constraint regardless of what it was asked to do.
-
-## Example
-
-See `example_order.py` for a full order-fulfillment workflow with 9 tools and 7 constraints, including a comparison between constrained and unconstrained agents given an adversarial prompt that attempts to bypass all checks.
+| File | Highlights |
+|---|---|
+| `example.py` | Basic banking workflow; tools and rules in the JSON spec |
+| `example_support.py` | Multi-turn `chat()`; `$from` enum constrained from a prior result |
+| `example_medical.py` | `anyOf` condition; `result` value matching; static param bounds; Python rule for negation |
+| `example_analytics.py` | No spec file — all tools and rules in Python |
+| `example_order.py` | 9 tools, 7 constraints; constrained vs. unconstrained comparison on an adversarial prompt |

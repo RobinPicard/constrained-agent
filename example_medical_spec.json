@@ -1,0 +1,99 @@
+{
+    "format": "qwen3",
+    "system_prompt": "You are a medical intake assistant. Follow triage protocols strictly.",
+    "tools": {
+        "collect_symptoms": {
+            "description": "Record the patient's reported symptoms.",
+            "params": {
+                "patient_id": {"type": "string"},
+                "symptoms": {"type": "string"}
+            },
+            "required": ["patient_id", "symptoms"]
+        },
+        "check_vitals": {
+            "description": "Measure and record the patient's vital signs.",
+            "params": {
+                "patient_id": {"type": "string"}
+            },
+            "required": ["patient_id"]
+        },
+        "run_triage": {
+            "description": "Assess urgency based on symptoms and vitals.",
+            "params": {
+                "patient_id": {"type": "string"}
+            },
+            "required": ["patient_id"]
+        },
+        "prescribe_medication": {
+            "description": "Prescribe medication for a non-critical patient.",
+            "params": {
+                "patient_id": {"type": "string"},
+                "medication": {"type": "string"},
+                "dosage_mg": {"type": "number"}
+            },
+            "required": ["patient_id", "medication", "dosage_mg"]
+        },
+        "call_ambulance": {
+            "description": "Dispatch an ambulance for a critical patient.",
+            "params": {
+                "patient_id": {"type": "string"},
+                "location": {"type": "string"}
+            },
+            "required": ["patient_id", "location"]
+        },
+        "schedule_followup": {
+            "description": "Schedule a follow-up appointment.",
+            "params": {
+                "patient_id": {"type": "string"},
+                "days_from_now": {"type": "integer"}
+            },
+            "required": ["patient_id", "days_from_now"]
+        }
+    },
+    "rules": [
+        {
+            "name": "require_assessment_before_triage",
+            "if": {
+                "anyOf": [
+                    {"tool": "collect_symptoms", "has_run": false},
+                    {"tool": "check_vitals", "has_run": false}
+                ]
+            },
+            "then": [
+                {
+                    "tool": "run_triage",
+                    "available": false,
+                    "reason": "Collect symptoms and check vitals before running triage."
+                }
+            ]
+        },
+        {
+            "name": "require_triage_before_treatment",
+            "if": {"tool": "run_triage", "has_run": false},
+            "then": [
+                {"tool": "prescribe_medication", "available": false, "reason": "Run triage first."},
+                {"tool": "call_ambulance", "available": false, "reason": "Run triage first."},
+                {"tool": "schedule_followup", "available": false, "reason": "Run triage first."}
+            ]
+        },
+        {
+            "name": "cap_dosage_for_routine_cases",
+            "if": {"tool": "run_triage", "result": {"urgency": "routine"}},
+            "then": [{
+                "tool": "prescribe_medication",
+                "params": {
+                    "dosage_mg": {"minimum": 0, "maximum": 500}
+                }
+            }]
+        },
+        {
+            "name": "block_prescribe_for_critical_cases",
+            "if": {"tool": "run_triage", "result": {"urgency": "critical"}},
+            "then": [{
+                "tool": "prescribe_medication",
+                "available": false,
+                "reason": "Critical case: call an ambulance instead of prescribing."
+            }]
+        }
+    ]
+}

@@ -1,0 +1,35 @@
+{
+    "format": "qwen3",
+    "system_prompt": "You are an order fulfillment assistant. Follow user instructions exactly.",
+    "rules": [
+        {
+            "name": "require_customer_before_cart",
+            "if": {"tool": "search_customer", "has_run": false},
+            "then": [{"tool": "get_cart", "available": false, "reason": "Call search_customer first."}]
+        },
+        {
+            "name": "require_cart_before_downstream",
+            "if": {"tool": "get_cart", "has_run": false},
+            "then": [
+                {"tool": "check_inventory", "available": false, "reason": "Call get_cart first."},
+                {"tool": "apply_coupon", "available": false, "reason": "Call get_cart first."},
+                {"tool": "calculate_shipping", "available": false, "reason": "Call get_cart first."}
+            ]
+        },
+        {
+            "name": "require_shipping_before_payment",
+            "if": {"tool": "calculate_shipping", "has_run": false},
+            "then": [{"tool": "process_payment", "available": false, "reason": "Call calculate_shipping first."}]
+        },
+        {
+            "name": "require_credit_check_before_payment",
+            "if": {"tool": "run_credit_check", "has_run": false},
+            "then": [{"tool": "process_payment", "available": false, "reason": "Call run_credit_check first."}]
+        },
+        {
+            "name": "require_shipment_before_confirmation",
+            "if": {"tool": "create_shipment", "has_run": false},
+            "then": [{"tool": "send_confirmation", "available": false, "reason": "Call create_shipment first."}]
+        }
+    ]
+}

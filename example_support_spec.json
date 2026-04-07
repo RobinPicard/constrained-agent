@@ -1,0 +1,66 @@
+{
+    "format": "qwen3",
+    "system_prompt": "You are a helpful customer support agent.",
+    "tools": {
+        "lookup_account": {
+            "description": "Look up a customer account by email.",
+            "params": {
+                "email": {"type": "string"}
+            },
+            "required": ["email"]
+        },
+        "get_ticket_history": {
+            "description": "Retrieve open and recent support tickets for a customer.",
+            "params": {
+                "account_id": {"type": "string"}
+            },
+            "required": ["account_id"]
+        },
+        "create_ticket": {
+            "description": "Create a new support ticket.",
+            "params": {
+                "account_id": {"type": "string"},
+                "category": {"type": "string"},
+                "description": {"type": "string"}
+            },
+            "required": ["account_id", "category", "description"]
+        },
+        "escalate_ticket": {
+            "description": "Escalate a ticket to a senior support engineer.",
+            "params": {
+                "ticket_id": {"type": "string"},
+                "reason": {"type": "string"}
+            },
+            "required": ["ticket_id", "reason"]
+        },
+        "close_ticket": {
+            "description": "Mark a ticket as resolved and close it.",
+            "params": {
+                "ticket_id": {"type": "string"}
+            },
+            "required": ["ticket_id"]
+        }
+    },
+    "rules": [
+        {
+            "name": "require_account_before_all",
+            "if": {"tool": "lookup_account", "has_run": false},
+            "then": [
+                {"tool": "get_ticket_history", "available": false, "reason": "Look up the account first."},
+                {"tool": "create_ticket", "available": false, "reason": "Look up the account first."},
+                {"tool": "escalate_ticket", "available": false, "reason": "Look up the account first."},
+                {"tool": "close_ticket", "available": false, "reason": "Look up the account first."}
+            ]
+        },
+        {
+            "name": "restrict_ticket_categories",
+            "if": {"tool": "lookup_account", "has_run": true},
+            "then": [{
+                "tool": "create_ticket",
+                "params": {
+                    "category": {"enum": {"$from": "lookup_account.result.available_categories"}}
+                }
+            }]
+        }
+    ]
+}
