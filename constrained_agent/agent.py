@@ -4,7 +4,6 @@ import re
 import outlines
 import xgrammar as xgr
 from outlines.backends.xgrammar import XGrammarLogitsProcessor
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Literal, Type
 from pydantic import BaseModel
@@ -76,7 +75,8 @@ class Agent:
         system_prompt: str | None = None,
         max_turns: int | None = None,
         inference_kwargs: dict | None = None,
-        max_concurrent_tool_calls: int | None = None,
+        stop_after_first: bool | None = None,
+        at_least_one: bool | None = None,
         verbose: bool = False,
     ):
         """Create an Agent.
@@ -108,8 +108,14 @@ class Agent:
             ``"replace"`` (default) — only the Python rules apply; spec rules
             are discarded. ``"merge"`` — Python rules run after spec rules,
             both apply.
-        system_prompt, max_turns, inference_kwargs, max_concurrent_tool_calls:
+        system_prompt, max_turns, inference_kwargs:
             Agent configuration. Override spec values when provided.
+        stop_after_first:
+            Stop generation after the first tool call. Enforced at the token
+            level via xgrammar. Overrides the spec value when provided.
+        at_least_one:
+            Require at least one tool call to be generated. Enforced at the
+            token level via xgrammar. Overrides the spec value when provided.
         verbose:
             Print turn-by-turn debug output.
         """
@@ -184,7 +190,8 @@ class Agent:
         self.system_prompt = system_prompt if system_prompt is not None else (agent_spec.system_prompt if agent_spec else None)
         self.max_turns = max_turns if max_turns is not None else (agent_spec.max_turns if agent_spec else None) or 10
         self.inference_kwargs = inference_kwargs if inference_kwargs is not None else spec_inference_kwargs
-        self.max_concurrent_tool_calls = max_concurrent_tool_calls if max_concurrent_tool_calls is not None else (agent_spec.max_concurrent_tool_calls if agent_spec else None)
+        self.stop_after_first = stop_after_first if stop_after_first is not None else (agent_spec.stop_after_first if agent_spec else False) or False
+        self.at_least_one = at_least_one if at_least_one is not None else (agent_spec.at_least_one if agent_spec else False) or False
         self.verbose = verbose
         self.session = Session()
         tokenizer_info = xgr.TokenizerInfo.from_huggingface(
@@ -274,11 +281,7 @@ class Agent:
             if not tool_calls:
                 return text or ""
 
-            if self.max_concurrent_tool_calls is not None:
-                with ThreadPoolExecutor(max_workers=self.max_concurrent_tool_calls) as executor:
-                    raw_results = list(executor.map(self._execute_tool, tool_calls))
-            else:
-                raw_results = [self._execute_tool(tc) for tc in tool_calls]
+            raw_results = [self._execute_tool(tc) for tc in tool_calls]
 
             for call_id, result, name, args in raw_results:
                 if self.verbose:
