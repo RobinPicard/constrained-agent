@@ -221,8 +221,13 @@ class Agent:
         prompt = self.model.tokenizer.tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
         )
-        tags, triggers = self.format.structural_tags(self.registry)
-        compiled = self._grammar_compiler.compile_structural_tag(tags, triggers)
+        structural_tag = self.format.structural_tags(
+            self.registry,
+            stop_after_first=self.stop_after_first,
+            at_least_one=self.at_least_one,
+        )
+        grammar = xgr.Grammar.from_structural_tag(structural_tag)
+        compiled = self._grammar_compiler.compile_grammar(grammar)
         processor = XGrammarLogitsProcessor(compiled, self._tensor_library_name)
         generator = outlines.Generator(self.model, processor=processor)
         return generator(prompt, **self.inference_kwargs)
@@ -257,7 +262,6 @@ class Agent:
 
             messages = [{"role": "system", "content": self._build_system()}] + self.session.messages
             raw = self._generate(messages)
-            print(raw)
             parsed = self.format.parse(raw)
             text = parsed.content or None
             tool_calls = parsed.tool_calls
