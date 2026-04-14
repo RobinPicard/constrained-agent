@@ -248,7 +248,8 @@ Agent(
     system_prompt="...",                 # overrides spec
     max_turns=10,                        # overrides spec
     inference_kwargs={"max_new_tokens": 512},  # generation kwargs — overrides spec
-    max_concurrent_tool_calls=4,         # parallel tool execution
+    stop_after_first=True,               # stop generation after the first tool call
+    at_least_one=True,                   # require at least one tool call to be generated
     verbose=True,
 )
 ```

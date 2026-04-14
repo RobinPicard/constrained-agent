@@ -227,37 +227,67 @@ class ModelFormat:
     # Structural tag schema (xgrammar)
     # ------------------------------------------------------------------
 
-    def structural_tags(self, registry: Any) -> tuple[list, list[str]]:
-        """Return ``(tags, triggers)`` for the available tools.
+    def structural_tags(
+        self,
+        registry: Any,
+        *,
+        stop_after_first: bool = False,
+        at_least_one: bool = False,
+    ) -> Any:
+        """Return a ``StructuralTag`` for the available tools.
 
-        ``tags`` is a list of ``xgrammar.StructuralTagItem``.
-        Pass both to ``GrammarCompiler.compile_structural_tag(tags, triggers)``.
+        Pass the result to ``Grammar.from_structural_tag()``, then compile with
+        ``GrammarCompiler.compile_grammar()``.
         """
         try:
-            from xgrammar import StructuralTagItem
+            from xgrammar.structural_tag import (
+                JSONSchemaFormat,
+                StructuralTag,
+                TagFormat,
+                TriggeredTagsFormat,
+            )
         except ImportError as e:
             raise ImportError(
-                "structural_tags() requires xgrammar: pip install xgrammar"
+                "structural_tags() requires xgrammar>=0.1.33: pip install xgrammar"
             ) from e
 
         if self._style == "tagged_name":
-            return self._structural_tags_tagged_name(registry, StructuralTagItem)
+            return self._structural_tags_tagged_name(
+                registry, StructuralTag, TagFormat, JSONSchemaFormat, TriggeredTagsFormat,
+                stop_after_first=stop_after_first, at_least_one=at_least_one,
+            )
         else:
-            return self._structural_tags_json_body(registry, StructuralTagItem)
+            return self._structural_tags_json_body(
+                registry, StructuralTag, TagFormat, JSONSchemaFormat, TriggeredTagsFormat,
+                stop_after_first=stop_after_first, at_least_one=at_least_one,
+            )
 
-    def _structural_tags_tagged_name(self, registry, StructuralTagItem):
+    def _structural_tags_tagged_name(
+        self, registry, StructuralTag, TagFormat, JSONSchemaFormat, TriggeredTagsFormat,
+        *, stop_after_first, at_least_one,
+    ):
         f = self._func
         tags = [
-            StructuralTagItem(
+            TagFormat(
                 begin=f["prefix"] + tool.name + f["sep"],
-                schema=json.dumps(tool.schema.to_json_schema()),
+                content=JSONSchemaFormat(json_schema=tool.schema.to_json_schema()),
                 end=f["close"],
             )
             for tool in registry.available_tools()
         ]
-        return tags, [f["prefix"]]
+        return StructuralTag(
+            format=TriggeredTagsFormat(
+                triggers=[f["prefix"]],
+                tags=tags,
+                at_least_one=at_least_one,
+                stop_after_first=stop_after_first,
+            )
+        )
 
-    def _structural_tags_json_body(self, registry, StructuralTagItem):
+    def _structural_tags_json_body(
+        self, registry, StructuralTag, TagFormat, JSONSchemaFormat, TriggeredTagsFormat,
+        *, stop_after_first, at_least_one,
+    ):
         f = self._func
         name_field = f["name_field"]
         args_field = f["args_field"]
@@ -276,8 +306,19 @@ class ModelFormat:
             ]
         }
         trigger = f.get("wrapper_open", f["open"])
-        tags = [StructuralTagItem(begin=f["open"], schema=json.dumps(union_schema), end=f["close"])]
-        return tags, [trigger]
+        tag = TagFormat(
+            begin=f["open"],
+            content=JSONSchemaFormat(json_schema=union_schema),
+            end=f["close"],
+        )
+        return StructuralTag(
+            format=TriggeredTagsFormat(
+                triggers=[trigger],
+                tags=[tag],
+                at_least_one=at_least_one,
+                stop_after_first=stop_after_first,
+            )
+        )
 
     # ------------------------------------------------------------------
     # System-prompt helpers (used by local adapters)
