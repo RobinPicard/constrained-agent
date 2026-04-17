@@ -6,7 +6,12 @@ An agent framework where tool availability and parameter bounds are enforced at 
 
 Most agent frameworks treat tool schemas as static: the model sees the same tools with the same parameters every turn, and workflow compliance is left to the system prompt. This breaks under adversarial prompts, distracted models, or complex multi-step workflows — the model can skip required steps or pass invalid values.
 
-`constrained-agent` takes a different approach: **constraints are declared in a JSON spec that is compiled into schema mutations applied at the start of every turn**. A tool that hasn't been unlocked is absent from the schema — it cannot be called regardless of what the user or model says. Parameter bounds are enforced at the token level via [xgrammar](https://github.com/mlc-ai/xgrammar), so the model cannot generate an out-of-range value even if it tries.
+`constrained-agent` takes a different approach: **constraints are declared in a JSON spec that is compiled into schema mutations applied at the start of every turn**. A tool that hasn't been unlocked is absent from the schema — it cannot be called regardless of what the user or model says. Parameter bounds are enforced at the token level via grammar-constrained generation, so the model cannot generate an out-of-range value even if it tries.
+
+Two generation backends are supported:
+
+- **Local** — via [outlines](https://github.com/dottxt-ai/outlines) + [xgrammar](https://github.com/mlc-ai/xgrammar) for direct HuggingFace model inference
+- **API** — via any OpenAI-compatible endpoint that supports [structural tags](https://docs.dottxt.co/structural-tags) (e.g. vLLM, dottxt)
 
 ## Install
 
@@ -58,19 +63,44 @@ Define a spec file describing the model format, tools, and constraint rules:
 }
 ```
 
-Then provide only the function implementations:
+Then provide the function implementations and a backend:
+
+**With an API endpoint:**
 
 ```python
-import outlines
-from constrained_agent import Agent
+from constrained_agent import Agent, OpenAIBackend
 
-model = outlines.from_transformers(...)
+backend = OpenAIBackend(
+    model="Qwen/Qwen3-8B",
+    base_url="http://localhost:8000/v1",
+    api_key="dummy",
+)
 
 def check_balance(account_id: str) -> dict:
     return {"account_id": account_id, "currentBalance": 500.0}
 
 def transfer(account_id: str, recipient_id: str, amount: float) -> dict:
     return {"status": "success", "amount": amount}
+
+agent = Agent(
+    backend,
+    implementations={"check_balance": check_balance, "transfer": transfer},
+    spec="banking_spec.json",
+)
+
+response = agent.run("Transfer $600 to ACC-456 from ACC-123.")
+```
+
+**With a local outlines model:**
+
+```python
+import outlines
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from constrained_agent import Agent
+
+hf_model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-8B", device_map="cuda")
+hf_tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-8B")
+model = outlines.from_transformers(hf_model, hf_tokenizer)
 
 agent = Agent(
     model,
@@ -237,7 +267,7 @@ response = agent.chat("Now transfer $100.")
 
 ```python
 Agent(
-    model,                               # required — the language model
+    model_or_backend,                    # required — outlines model or Backend instance
     implementations={...},               # {tool_name: callable}
     spec="spec.json",                    # path, dict, or AgentSpec — provides defaults
     tools=[PydanticClass, ...],          # overrides spec tools section
@@ -247,7 +277,7 @@ Agent(
     format="qwen3",                      # ModelFormat or name string — overrides spec
     system_prompt="...",                 # overrides spec
     max_turns=10,                        # overrides spec
-    inference_kwargs={"max_new_tokens": 512},  # generation kwargs — overrides spec
+    inference_kwargs={...},              # generation kwargs — overrides spec
     stop_after_first=True,               # stop generation after the first tool call
     at_least_one=True,                   # require at least one tool call to be generated
     verbose=True,
@@ -265,3 +295,9 @@ Explicit arguments always override values from the spec.
 | `example_medical.py` | `anyOf` condition; `result` value matching; static param bounds; Python rule for negation |
 | `example_analytics.py` | No spec file — all tools and rules in Python |
 | `example_order.py` | 9 tools, 7 constraints; constrained vs. unconstrained comparison on an adversarial prompt |
+
+## Benchmarks
+
+The `benchmarks/` directory contains evaluation harnesses for measuring the impact of constraints on standard benchmarks. Currently:
+
+- **BFCL `multi_turn_base`** — 200 multi-turn function-calling test cases. Runs each case with and without constraints and compares accuracy using the official checker. See [`benchmarks/README.md`](benchmarks/README.md) for setup and usage.
