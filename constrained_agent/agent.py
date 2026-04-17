@@ -1,16 +1,18 @@
 from __future__ import annotations
 import json
 import re
-import outlines
-import xgrammar as xgr
-from outlines.backends.xgrammar import XGrammarLogitsProcessor
 from pathlib import Path
 from typing import Any, Callable, Literal, Type
 from pydantic import BaseModel
+from .backends.base import Backend
 from .session import Session
 from .tools import Tool, ToolRegistry
 from .format import ModelFormat
 from .spec import AgentSpec
+
+
+def _is_backend(obj) -> bool:
+    return isinstance(obj, Backend)
 
 
 def _class_to_tool_name(cls: type) -> str:
@@ -64,7 +66,7 @@ _CONSTRAINT_NOTICE = (
 class Agent:
     def __init__(
         self,
-        model,
+        model_or_backend,
         implementations: dict[str, Callable] | None = None,
         format: ModelFormat | str | None = None,
         spec: str | Path | dict | AgentSpec | None = None,
@@ -83,8 +85,9 @@ class Agent:
 
         Parameters
         ----------
-        model:
-            The language model to use.
+        model_or_backend:
+            Either a ``Backend`` instance (e.g. ``OpenAIBackend``) or an
+            outlines model object for local generation.
         implementations:
             Mapping from tool name to callable implementation.
         format:
@@ -112,10 +115,11 @@ class Agent:
             Agent configuration. Override spec values when provided.
         stop_after_first:
             Stop generation after the first tool call. Enforced at the token
-            level via xgrammar. Overrides the spec value when provided.
+            level via the structural tag. Overrides the spec value when provided.
         at_least_one:
             Require at least one tool call to be generated. Enforced at the
-            token level via xgrammar. Overrides the spec value when provided.
+            token level via the structural tag. Overrides the spec value when
+            provided.
         verbose:
             Print turn-by-turn debug output.
         """
@@ -183,7 +187,21 @@ class Agent:
         # --- resolve config (explicit args override spec) ---
         spec_inference_kwargs = agent_spec.inference_kwargs if agent_spec else {}
 
-        self.model = model
+        # --- detect backend vs outlines model ---
+        if _is_backend(model_or_backend):
+            self.backend = model_or_backend
+            self.model = None
+        else:
+            import xgrammar as xgr
+            self.backend = None
+            self.model = model_or_backend
+            tokenizer_info = xgr.TokenizerInfo.from_huggingface(
+                model_or_backend.hf_tokenizer,
+                vocab_size=model_or_backend.model.config.vocab_size,
+            )
+            self._grammar_compiler = xgr.GrammarCompiler(tokenizer_info)
+            self._tensor_library_name = model_or_backend.tensor_library_name
+
         self.format = format
         self.registry = ToolRegistry(built_tools)
         self.constraints = constraints
@@ -194,11 +212,6 @@ class Agent:
         self.at_least_one = at_least_one if at_least_one is not None else (agent_spec.at_least_one if agent_spec else False) or False
         self.verbose = verbose
         self.session = Session()
-        tokenizer_info = xgr.TokenizerInfo.from_huggingface(
-            model.hf_tokenizer, vocab_size=model.model.config.vocab_size
-        )
-        self._grammar_compiler = xgr.GrammarCompiler(tokenizer_info)
-        self._tensor_library_name = model.tensor_library_name
 
     def _apply_constraints(self) -> None:
         self.registry.reset_all()
@@ -212,26 +225,35 @@ class Agent:
         tools = self.format.format_tools(self.registry)
         parts.append(self.format.tools_to_text(tools))
         parts.append(self.format.format_instructions())
-        parts.append(_CONSTRAINT_NOTICE)
-        unavailable = self.registry.unavailable_tools()
-        if unavailable:
-            lines = ["Currently unavailable tools (exist but cannot be called yet):"]
-            for t in unavailable:
-                line = f"- {t.name}: {t.schema.description}"
-                if t.schema.unavailable_reason:
-                    line += f" Unavailable: {t.schema.unavailable_reason}"
-                lines.append(line)
-            parts.append("\n".join(lines))
+        if self.constraints:
+            parts.append(_CONSTRAINT_NOTICE)
+            unavailable = self.registry.unavailable_tools()
+            if unavailable:
+                lines = ["Tools not yet unlocked (will become available after calling the right prerequisite tools):"]
+                for t in unavailable:
+                    line = f"- {t.name}: {t.schema.description}"
+                    if t.schema.unavailable_reason:
+                        line += f" How to unlock: {t.schema.unavailable_reason}"
+                    lines.append(line)
+                parts.append("\n".join(lines))
         return "\n\n".join(parts)
 
     def _generate(self, messages: list[dict]) -> str:
-        prompt = self.model.tokenizer.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
         structural_tag = self.format.structural_tags(
             self.registry,
             stop_after_first=self.stop_after_first,
             at_least_one=self.at_least_one,
+        )
+        if self.backend is not None:
+            return self.backend.generate(
+                messages, structural_tag, **self.inference_kwargs
+            )
+        # outlines / xgrammar local path
+        import outlines
+        import xgrammar as xgr
+        from outlines.backends.xgrammar import XGrammarLogitsProcessor
+        prompt = self.model.tokenizer.tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
         )
         grammar = xgr.Grammar.from_structural_tag(structural_tag)
         compiled = self._grammar_compiler.compile_grammar(grammar)
