@@ -9,10 +9,9 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
     "pyyaml>=6.0",
-    "outlines",
-    "xgrammar",
+    "openai>=1.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest"]
-local = ["transformers>=4.40"]
+bfcl = ["bfcl-eval>=2026.1.17"]

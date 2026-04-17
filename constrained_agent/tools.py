@@ -126,5 +126,5 @@ class ToolRegistry:
     def unavailable_tools(self) -> list[Tool]:
         return [t for t in self._tools.values() if not t.schema.available]
 
-    def execute(self, name: str, **kwargs) -> Any:
-        return self._tools[name].execute(**kwargs)
+    def execute(self, tool_name: str, **kwargs) -> Any:
+        return self._tools[tool_name].execute(**kwargs)

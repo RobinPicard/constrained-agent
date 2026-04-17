@@ -4,3 +4,6 @@ __pycache__/
 dist/
 build/
 .env
+
+# Ad-hoc scripts (superseded by benchmarks/)
+run_bfcl_*.py

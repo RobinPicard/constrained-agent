@@ -224,7 +224,7 @@ class ModelFormat:
         return content, tool_calls
 
     # ------------------------------------------------------------------
-    # Structural tag schema (xgrammar)
+    # Structural tag schema
     # ------------------------------------------------------------------
 
     def structural_tags(
@@ -233,61 +233,55 @@ class ModelFormat:
         *,
         stop_after_first: bool = False,
         at_least_one: bool = False,
-    ) -> Any:
-        """Return a ``StructuralTag`` for the available tools.
+    ) -> dict:
+        """Return a structural tag schema dict for the available tools.
 
-        Pass the result to ``Grammar.from_structural_tag()``, then compile with
-        ``GrammarCompiler.compile_grammar()``.
+        The returned dict follows the xgrammar StructuralTag format and can be
+        passed directly to an OpenAI-compatible API as ``response_format``.
         """
-        try:
-            from xgrammar.structural_tag import (
-                JSONSchemaFormat,
-                StructuralTag,
-                TagFormat,
-                TriggeredTagsFormat,
-            )
-        except ImportError as e:
-            raise ImportError(
-                "structural_tags() requires xgrammar>=0.1.33: pip install xgrammar"
-            ) from e
-
         if self._style == "tagged_name":
             return self._structural_tags_tagged_name(
-                registry, StructuralTag, TagFormat, JSONSchemaFormat, TriggeredTagsFormat,
+                registry,
                 stop_after_first=stop_after_first, at_least_one=at_least_one,
             )
         else:
             return self._structural_tags_json_body(
-                registry, StructuralTag, TagFormat, JSONSchemaFormat, TriggeredTagsFormat,
+                registry,
                 stop_after_first=stop_after_first, at_least_one=at_least_one,
             )
 
     def _structural_tags_tagged_name(
-        self, registry, StructuralTag, TagFormat, JSONSchemaFormat, TriggeredTagsFormat,
-        *, stop_after_first, at_least_one,
-    ):
+        self, registry, *, stop_after_first, at_least_one,
+    ) -> dict:
         f = self._func
         tags = [
-            TagFormat(
-                begin=f["prefix"] + tool.name + f["sep"],
-                content=JSONSchemaFormat(json_schema=tool.schema.to_json_schema()),
-                end=f["close"],
-            )
+            {
+                "type": "tag",
+                "begin": f["prefix"] + tool.name + f["sep"],
+                "content": {
+                    "type": "json_schema",
+                    "json_schema": tool.schema.to_json_schema(),
+                    "style": "json",
+                },
+                "end": f["close"],
+            }
             for tool in registry.available_tools()
         ]
-        return StructuralTag(
-            format=TriggeredTagsFormat(
-                triggers=[f["prefix"]],
-                tags=tags,
-                at_least_one=at_least_one,
-                stop_after_first=stop_after_first,
-            )
-        )
+        return {
+            "type": "structural_tag",
+            "format": {
+                "type": "triggered_tags",
+                "triggers": [f["prefix"]],
+                "tags": tags,
+                "at_least_one": at_least_one,
+                "stop_after_first": stop_after_first,
+                "excludes": [],
+            },
+        }
 
     def _structural_tags_json_body(
-        self, registry, StructuralTag, TagFormat, JSONSchemaFormat, TriggeredTagsFormat,
-        *, stop_after_first, at_least_one,
-    ):
+        self, registry, *, stop_after_first, at_least_one,
+    ) -> dict:
         f = self._func
         name_field = f["name_field"]
         args_field = f["args_field"]
@@ -306,19 +300,27 @@ class ModelFormat:
             ]
         }
         trigger = f.get("wrapper_open", f["open"])
-        tag = TagFormat(
-            begin=f["open"],
-            content=JSONSchemaFormat(json_schema=union_schema),
-            end=f["close"],
-        )
-        return StructuralTag(
-            format=TriggeredTagsFormat(
-                triggers=[trigger],
-                tags=[tag],
-                at_least_one=at_least_one,
-                stop_after_first=stop_after_first,
-            )
-        )
+        tag = {
+            "type": "tag",
+            "begin": f["open"],
+            "content": {
+                "type": "json_schema",
+                "json_schema": union_schema,
+                "style": "json",
+            },
+            "end": f["close"],
+        }
+        return {
+            "type": "structural_tag",
+            "format": {
+                "type": "triggered_tags",
+                "triggers": [trigger],
+                "tags": [tag],
+                "at_least_one": at_least_one,
+                "stop_after_first": stop_after_first,
+                "excludes": [],
+            },
+        }
 
     # ------------------------------------------------------------------
     # System-prompt helpers (used by local adapters)
